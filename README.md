@@ -37,6 +37,7 @@ rede doméstica. Não é benchmark: é o que você deve ver se repetir.
 | CDC, commit no Postgres até a linha consultável | p50 ~5 s, p95 7,7 s |
 | Só a captura, commit até o Debezium | p50 0,25 s |
 | Duplicatas de order_id no snapshot (`__op = 'r'`), nos testes de 2,2 milhões e na carga de 10 GB | 0 |
+| Bronze × Postgres depois do CDC (último evento de cada order_id, sem os deletados) | 94.211.772 nos dois lados |
 
 Com 8 instâncias, o limite foi o laptop (CPU em 99%, memória em alerta), não o Zerobus.
 
