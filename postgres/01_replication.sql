@@ -2,7 +2,7 @@
 -- Rode como superusuário (ex.: psql -U postgres -d postgres -f postgres/01_replication.sql)
 --
 -- wal_level=logical exige REINICIAR o PostgreSQL depois deste script.
--- Homebrew:  brew services restart postgresql@16   (ajuste a versão)
+-- Homebrew:  brew services restart postgresql@18   (ajuste a versão)
 -- Postgres.app: Stop / Start no app.
 
 ALTER SYSTEM SET wal_level = 'logical';
