@@ -5,18 +5,22 @@ por qualquer conector que *puxe* dados) empurra cada insert/update/delete para t
 Nenhum broker no meio. O Debezium Server lê o WAL e entrega direto no Zerobus pelo sink nativo (3.7+).
 
 ```
- MacBook                                                        Azure Databricks
- ┌──────────────┐   WAL (pgoutput)   ┌────────────────────┐  gRPC/TLS  ┌──────────────┐   Lakeflow SDP   ┌─────────────────┐
- │ PostgreSQL   │ ─────────────────▶ │ Debezium Server    │ ─────────▶ │ Zerobus      │ ──────────────▶ │ retail_silver.* │
- │ retail.*     │   slot zerobus_demo│ sink=zerobus       │   ~150 ms  │ ▶ retail.*   │  AUTO CDC       │ estado atual    │
- └──────────────┘                    │ unwrap SMT (typed) │   durável  │  (bronze)    │  SEQUENCE BY lsn│ (SCD 1)         │
-        ▲                            └────────────────────┘            └──────────────┘                 └─────────────────┘
- gerador Python: carga em massa (COPY) + simulação de operação (insert/update/delete)      consultável em ~5 s
+ MacBook (rede de casa)                                  Azure Databricks
+ ┌──────────────┐  WAL (pgoutput)   ┌────────────────────┐  gRPC/TLS  ┌──────────────────┐
+ │ PostgreSQL   │ ────────────────▶ │ Debezium Server    │ ─────────▶ │ Zerobus Ingest   │
+ │ retail.*     │ slot zerobus_demo │ sink=zerobus       │ porta 443  │ ▶ retail.*       │
+ └──────────────┘                   │ unwrap SMT (typed) │            │   bronze Delta   │
+        ▲                           └────────────────────┘            └────────┬─────────┘
+ gerador Python: COPY + simulação (insert/update/delete)                       │ consultável em ~5 s
+                                             Lakeflow AUTO CDC (próximo passo) ▼
+                                                                      ┌──────────────────┐
+                                                                      │ retail_silver.*  │
+                                                                      └──────────────────┘
 ```
 
 Por que Zerobus e não o conector gerenciado do Lakeflow Connect: o conector gerenciado **puxa** do banco por um
 gateway de ingestão que precisa alcançar o Postgres. Um laptop em rede doméstica não é alcançável; ele só consegue
-**empurrar**. É o mesmo caso dos data centers on-prem que a Databricks cita (Meta, Toyota). Quando o banco está
+**empurrar**. É o mesmo caso das fábricas da Joby Aviation e da Toyota, que a Databricks publicou como casos de Zerobus. Quando o banco está
 numa rede alcançável, o conector gerenciado é a escolha simples.
 
 ## Resultados medidos (30/10/2026)
@@ -47,18 +51,18 @@ Com 8 instâncias, o limite foi o laptop (CPU em 99%, memória em alerta), não 
 | Requisitos do Zerobus (tabela existente, grants diretos na tabela, sem CDF, regiões Azure incl. brazilsouth) | Documentação Databricks de 19 a 22/10/2026 |
 | Debezium Server rodando contra o Zerobus de verdade | Testado de ponta a ponta em 30/10/2026 (PostgreSQL 18, Azure Databricks eastus) |
 | `measure/latency.py` (databricks-sdk, statement execution) | Testado contra o workspace em 30/10/2026 |
+| Silver com AUTO CDC (`databricks/03_pipeline_silver.sql`) | **Ainda não executada** neste projeto |
 
 ## Pré-requisitos no Mac
 
 PostgreSQL 14+ já instalado e rodando; Anaconda ou Miniconda; Java 21+ (`brew install openjdk@21`); Databricks CLI autenticada
-(`databricks auth login`) para o script de latência; acesso ao workspace Azure Databricks da CI&T em uma das regiões com
+(`databricks auth login`) para o script de latência; acesso a um workspace Azure Databricks em uma das regiões com
 Zerobus (lista oficial inclui `brazilsouth`, `eastus`, `eastus2`, `centralus`, `westeurope` e outras).
 
 ```bash
 conda create -n bricks_zerobus python=3.12 -y
 conda activate bricks_zerobus
-pip install -r generator/requirements.txt
-pip install databricks-sdk          # só para o measure/latency.py
+pip install -r requirements.txt     # psycopg, tqdm e databricks-sdk
 cp .env.example .env                # preencha
 ```
 
@@ -70,7 +74,7 @@ Ou, de uma vez, com o `environment.yml` da raiz: `conda env create -f environmen
 
 ```bash
 psql -U postgres -d postgres -f postgres/01_replication.sql   # wal_level=logical + usuário dbz
-# reinicie o Postgres (brew services restart postgresql@16  ou  Postgres.app)
+# reinicie o Postgres (brew services restart postgresql@18  ou  Postgres.app)
 psql -U postgres -c "SHOW wal_level;"                          # deve ser 'logical'
 psql -U postgres -c "CREATE DATABASE retail_demo;"
 psql -U postgres -d retail_demo -f postgres/02_schema_retail.sql
@@ -110,7 +114,7 @@ número depois de `adb-` na URL do workspace (ou do `?o=`) e região é a do wor
 
 O script baixa a distribuição `3.7.0.Final` do Maven Central, copia `application.properties` e sobe o processo lendo o
 `.env`. O primeiro run faz o snapshot das duas tabelas (`snapshot.mode=initial`) e depois fica em streaming.
-Log esperado: `Connected to Zerobus...`, depois linhas de métricas a cada 20 lotes (`metrics.log.interval=20`).
+Log esperado: `Zerobus gRPC sink connected`, depois linhas de métricas a cada 20 lotes (`metrics.log.interval=20`).
 
 Como a tabela de destino é resolvida: o Debezium nomeia cada evento como `<topic.prefix>.<schema>.<tabela>`.
 Com `topic.prefix = UC_CATALOG`, `retail.orders` vira `<catálogo>.retail.orders` e o sink grava direto nela, uma stream
@@ -144,8 +148,8 @@ Consulta a bronze a cada 2 s e anota quando cada evento do `events.csv` ficou co
 `measure/latency.csv`. A resolução é o intervalo de polling, então a latência real é igual ou menor que a medida.
 Precisa de `UC_CATALOG` e `WAREHOUSE_ID` no `.env`. Só conta eventos gravados depois que o script começou (linhas
 antigas do `events.csv` são ignoradas) e, quando um pedido tem vários updates, mede só o primeiro.
-Para o artigo, rode com `--poll 1` por uns 10 minutos e some ao resultado o atraso Debezium→commit da query 3 de
-`databricks/04_checks.sql`.
+Para o artigo, rode com `--poll 1` por uns 10 minutos. O resultado já vai do commit no Postgres até a linha consultável;
+a query 3 de `databricks/04_checks.sql` mostra só o trecho da captura (do commit até o Debezium).
 
 ### 8. Conferências
 
@@ -154,7 +158,7 @@ Para o artigo, rode com `--poll 1` por uns 10 minutos e some ao resultado o atra
 ### 9. Carga grande: snapshot em paralelo (`run-parallel.sh`)
 
 Um stream do Zerobus, saindo do Mac para eastus, chegou a ~26 mil linhas/s com lote de 51200, usando ~1 núcleo de
-CPU. O limite é o stream, não o laptop. O `run-parallel.sh` sobe N instâncias do Debezium Server, cada uma lendo uma
+CPU. Com uma instância, o limite é o stream, não o laptop. O `run-parallel.sh` sobe N instâncias do Debezium Server, cada uma lendo uma
 faixa de `order_id` (`snapshot.select.statement.overrides`) com `snapshot.mode=initial_only`, e todas gravam na mesma
 tabela Delta, cada uma com o seu stream.
 
@@ -164,8 +168,8 @@ tabela Delta, cada uma com o seu stream.
 # 1) (opcional) ~10 GB: 114 bytes/linha na tabela de pedidos => ~94 milhões de linhas
 python generator/seed_bulk.py --orders 92000000
 # 2) Databricks: TRUNCATE TABLE <catalogo>.retail.orders; TRUNCATE TABLE <catalogo>.retail.inventory;
-# 3) snapshot em paralelo (padrão 4 instâncias)
-./debezium-server/run-parallel.sh 4
+# 3) snapshot em paralelo (8 instâncias na medição; heap de 1,5 GB por instância)
+./debezium-server/run-parallel.sh 8
 # 4) seguir com o CDC a partir de agora, sem refazer o snapshot
 DEBEZIUM_SOURCE_SNAPSHOT_MODE=no_data ./debezium-server/run.sh
 ```
@@ -177,7 +181,11 @@ DEBEZIUM_SOURCE_SNAPSHOT_MODE=no_data ./debezium-server/run.sh
 - Cada instância tem pasta própria em `debezium-server/parallel/iN` (config, offsets, `debezium.log`) e porta HTTP
   própria (8090, 8091...). A instância 0 leva também `retail.inventory`.
 - Medição: a mesma consulta `__op = 'r'` (linhas, segundos, linhas/s) no Databricks.
-- Não testado ainda com dados reais: o ganho por instância extra é hipótese até a primeira rodada.
+- Testado em 30/10/2026: com 2,2 milhões de linhas, 4 instâncias deram 96,9 mil linhas/s e 8 deram 109,5 mil; com 8,
+  os 10 GB levaram 14 min 47 s. De 4 para 8 o ganho foi pequeno porque o laptop chegou ao limite (CPU em 99%,
+  memória em alerta).
+- O seed de 92 milhões de linhas levou 22 min: 7 min 50 s de envio e o resto com o Postgres conferindo as chaves
+  estrangeiras no fim do `COPY`. A opção `--sem-fk` pula essa conferência (precisa de superusuário; ainda não testada).
 
 ## Decisões de desenho e armadilhas
 
@@ -187,6 +195,10 @@ Se o seu banco real usa `timestamptz`, a bronze recebe string e a conversão fic
 **Modo `typed` com o SMT `ExtractNewRecordState`.** É a recomendação da própria documentação do sink (JSON plano).
 O modo `envelope` guarda o evento cru (`operation`, `key`, `value`, `idempotency_key`) e é a alternativa quando se quer
 uma bronze fiel ao envelope; nesse modo **não** se aplica o unwrap. Os dois modos são contratos de tabela diferentes.
+
+**Lote grande.** O sink manda o lote, faz flush e espera o ack do Zerobus antes de pedir o próximo. Com o padrão de
+2048 linhas, uma instância fez 4,5 mil linhas/s; com `max.batch.size=51200`, 26 mil. Com pouco volume o lote não
+enche e sai a cada `poll.interval.ms` (500 ms), então a latência do CDC não muda.
 
 **O Zerobus nunca cria nem altera tabela.** Campo que não existe na tabela é rejeitado, não descartado em silêncio.
 Mudou o schema no Postgres? Altere a tabela Delta antes, ou o Debezium para com erro de schema.
@@ -210,7 +222,8 @@ dias, derrube o slot.
 
 ```
 .env.example                   variáveis (Postgres, Databricks, Zerobus, warehouse)
-environment.yml                env conda bricks_zerobus (psycopg, databricks-sdk)
+environment.yml                env conda bricks_zerobus (psycopg, tqdm, databricks-sdk)
+requirements.txt               as mesmas dependências, para pip
 postgres/01_replication.sql    wal_level=logical, usuário dbz
 postgres/02_schema_retail.sql  schema retail, REPLICA IDENTITY FULL, publicação zerobus_pub
 generator/seed_bulk.py         carga em massa via COPY
@@ -223,9 +236,23 @@ databricks/02_grants.sql       service principal
 databricks/03_pipeline_silver.sql  SDP com AUTO CDC
 databricks/04_checks.sql       conferências e métricas
 measure/latency.py             latência commit → consultável
+LICENSE                        Apache 2.0
 ```
 
-## Fontes (abertas em 29/10/2026)
+## Fontes
+
+Abertas em 31/10/2026:
+
+- [Zerobus Ingest, visão geral](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-overview)
+- [Use Zerobus Ingest](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-ingest)
+- [Cotas do Zerobus Ingest](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-limits)
+- [Debezium Server](https://debezium.io/documentation/reference/stable/operations/debezium-server.html)
+- [Conector PostgreSQL do Debezium](https://debezium.io/documentation/reference/connectors/postgresql)
+- [Debezium 3.7.0.Beta1](https://debezium.io/blog/2026/08/26/debezium-3-7-beta1-released/)
+- [Código do sink, tag v3.7.0.Final](https://github.com/debezium/debezium-server/tree/v3.7.0.Final/debezium-server-databricks-zerobus)
+
+Consultadas em 29/10/2026:
+
 
 - Databricks, *Use the Zerobus Ingest connector*, *Zerobus quotas*, *Zerobus limits*, *Zerobus release stages*
   (gRPC, REST e OTLP GA; Kafka e MQTT Beta; página de 22/10/2026) e *Feature region support* (Azure, 21/10/2026).
