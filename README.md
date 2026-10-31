@@ -36,7 +36,7 @@ rede doméstica. Não é benchmark: é o que você deve ver se repetir.
 | 4 e 8 instâncias em paralelo (2,2 milhões de linhas) | 96,9 mil e 109,5 mil linhas/s |
 | CDC, commit no Postgres até a linha consultável | p50 ~5 s, p95 7,7 s |
 | Só a captura, commit até o Debezium | p50 0,25 s |
-| Duplicatas por (order_id, `__lsn`) nos testes de 2,2 milhões | 0 |
+| Duplicatas de order_id no snapshot (`__op = 'r'`), nos testes de 2,2 milhões e na carga de 10 GB | 0 |
 
 Com 8 instâncias, o limite foi o laptop (CPU em 99%, memória em alerta), não o Zerobus.
 
