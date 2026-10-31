@@ -1,0 +1,10 @@
+name: bricks_zerobus
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - psycopg[binary]>=3.1
+      - tqdm
+      - databricks-sdk

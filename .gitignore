@@ -1,0 +1,20 @@
+# segredos: nunca versionar
+.env
+
+# gerados pelos scripts
+generator/events.csv
+measure/latency.csv
+debezium-server/dist/
+debezium-server/parallel/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS e editores
+.DS_Store
+.idea/
+.vscode/
