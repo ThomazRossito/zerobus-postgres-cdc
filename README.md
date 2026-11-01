@@ -57,7 +57,7 @@ Com 8 instâncias, o limite foi o laptop (CPU em 99%, memória em alerta), não 
 | Requisitos do Zerobus (tabela existente, grants diretos na tabela, sem CDF, regiões: `us-east-2` incluída) | Documentação Databricks de 19 a 28/10/2026 |
 | Debezium Server rodando contra o Zerobus de verdade | Testado de ponta a ponta em 01/11/2026 no Databricks Free Edition (AWS us-east-2): snapshot de 10 milhões em 427 s com 8 instâncias (upload de 77 Mbps), CDC com 0 erros |
 | `measure/latency.py` (databricks-sdk, statement execution) | Testado no Free Edition em 01/11/2026: p50 5,3 s, p95 7,9 s em 509 eventos; segunda rodada p50 5,6 s |
-| Zerobus no **Databricks Free Edition** (tabela gerenciada em default storage, service principal com OAuth) | Funciona: `tools/zerobus_smoke.py` e o pipeline inteiro rodaram em 01/11/2026. Um relato de julho/2026 na comunidade falhava por default storage; não falha mais |
+| Zerobus no **Databricks Free Edition** (tabela gerenciada em default storage, service principal com OAuth) | Funciona: o pipeline inteiro (snapshot em paralelo, CDC e medição) rodou nele em 01/11/2026. Um relato de julho/2026 na comunidade falhava por default storage; não falha mais |
 | Silver com AUTO CDC (`databricks/03_pipeline_silver.sql`) | **Ainda não executada** neste projeto |
 
 ## Pré-requisitos no Mac
@@ -246,7 +246,6 @@ databricks/03_pipeline_silver.sql  SDP com AUTO CDC
 databricks/04_checks.sql       conferências e métricas
 databricks/05_demo_video.sql   consultas do vídeo (A a H), para o SQLTools no VS Code
 measure/latency.py             latência commit → consultável
-tools/zerobus_smoke.py         teste de fumaça: N registros direto na tabela, sem Debezium (serve para Free Edition)
 LICENSE                        Apache 2.0
 ```
 
