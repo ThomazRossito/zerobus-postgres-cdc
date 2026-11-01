@@ -5,6 +5,7 @@
 #
 # Uso (da raiz do projeto):   ./debezium-server/run-parallel.sh [N]        N = instâncias (padrão 4)
 # Variáveis opcionais:        BATCH=51200  JAVA_OPTS="-Xms512m -Xmx1536m"  HTTP_BASE=8090  YES=1  ENV_FILE=.env.free
+#                             IDLE=180  (segundos sem ack, depois do fim do snapshot, para considerar a instância pronta)
 # Medido em 30/10/2026 (Mac 10 núcleos, 32 GB): 8 instâncias deixaram a CPU em 99% e a memória em alerta;
 # por isso fila de 2x o lote e heap de 1,5 GB por instância.
 #
@@ -193,6 +194,15 @@ echo
 last_r() {
   { grep 'Zerobus sink metrics' "$1" 2>/dev/null || true; } | tail -1 | { grep -o ' r=[0-9]*' || true; } | cut -d= -f2
 }
+# maior tempo de flush (ms) já visto no log: um lote de 51200 linhas numa rede lenta leva mais de 1 min para
+# receber o ack, e nesse intervalo o r= não muda. Antes o script tratava 60 s parado como "terminou" e matava
+# a instância no meio do flush (perdeu linhas em 01/11/2026). Agora espera pelo menos IDLE s e 3x o maior flush.
+max_flush_s() {
+  local ms
+  ms=$({ grep 'Zerobus sink metrics' "$1" 2>/dev/null || true; } | tail -1 | { grep -o 'maxFlushMs=[0-9]*' || true; } | cut -d= -f2)
+  echo $(( ${ms:-0} / 1000 ))
+}
+IDLE="${IDLE:-180}"
 FIN=(); LASTR=(); LASTCHG=(); ENDS=()
 T0=$(date +%s)
 for (( k = 0; k < N; k++ )); do FIN[k]=0; LASTR[k]=0; LASTCHG[k]=$T0; ENDS[k]=0; done
@@ -211,8 +221,8 @@ while :; do
       elif ! kill -0 "${PIDS[k]}" 2>/dev/null; then
         echo; echo "❌ a instância i$k parou antes de terminar. Últimas linhas do log:"
         tail -n 40 "$log"; cleanup; exit 1
-      elif grep -q 'Streaming is disabled for snapshot mode' "$log" 2>/dev/null && (( now - LASTCHG[k] >= 60 )); then
-        echo; echo "⚠️  i$k terminou o snapshot com r=$r, esperado ${EXPECT[k]}. Parando assim mesmo; confira no Databricks."
+      elif grep -q 'Streaming is disabled for snapshot mode' "$log" 2>/dev/null && (( now - LASTCHG[k] >= IDLE )) && (( now - LASTCHG[k] >= 3 * $(max_flush_s "$log") )); then
+        echo; echo "⚠️  i$k terminou o snapshot com r=$r, esperado ${EXPECT[k]}, e o sink ficou $(( now - LASTCHG[k] )) s sem novo ack. Parando; confira no Databricks."
         FIN[k]=1; ENDS[k]=$el; T_END=$now
         kill -TERM "${PIDS[k]}" 2>/dev/null || true
       else
