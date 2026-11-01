@@ -83,8 +83,10 @@ def main() -> int:
     ap.add_argument("--poll", type=float, default=2.0, help="intervalo entre consultas (s)")
     ap.add_argument("--events", default=str(Path(__file__).resolve().parents[1] / "generator" / "events.csv"))
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "latency.csv"))
+    ap.add_argument("--env", default=str(Path(__file__).resolve().parents[1] / ".env"),
+                    help="arquivo .env a usar (ex.: .env.free para outro workspace)")
     args = ap.parse_args()
-    load_env(Path(__file__).resolve().parents[1] / ".env")
+    load_env(Path(args.env))
 
     missing = [k for k in REQUIRED if not os.environ.get(k)]
     if missing:

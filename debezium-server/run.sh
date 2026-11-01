@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Baixa o Debezium Server (versão fixada), instala o application.properties e sobe o processo.
 # Uso:  ./debezium-server/run.sh           (a partir da raiz do projeto)
+#       ENV_FILE=.env.free ./debezium-server/run.sh   (outro workspace, com slot e offsets próprios no .env.free)
 set -euo pipefail
 
 DBZ_VERSION="${DBZ_VERSION:-3.7.0.Final}"
@@ -11,16 +12,18 @@ TARBALL="debezium-server-dist-${DBZ_VERSION}.tar.gz"
 URL="https://repo1.maven.org/maven2/io/debezium/debezium-server-dist/${DBZ_VERSION}/${TARBALL}"
 
 # 1) variáveis
-if [[ -f "$ROOT/.env" ]]; then
+ENV_FILE="${ENV_FILE:-$ROOT/.env}"   # outro workspace: ENV_FILE=.env.free ./debezium-server/run.sh
+[[ "$ENV_FILE" = /* ]] || ENV_FILE="$ROOT/$ENV_FILE"
+if [[ -f "$ENV_FILE" ]]; then
   set -a; # exporta tudo que o .env definir
   # shellcheck disable=SC1091
-  source "$ROOT/.env"
+  source "$ENV_FILE"
   set +a
 else
-  echo "faltou $ROOT/.env (copie de .env.example)"; exit 1
+  echo "faltou $ENV_FILE (copie de .env.example)"; exit 1
 fi
 for v in ZEROBUS_SERVER_ENDPOINT DATABRICKS_WORKSPACE_URL DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET UC_CATALOG PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DBNAME; do
-  [[ -n "${!v:-}" ]] || { echo "variável $v vazia no .env"; exit 1; }
+  [[ -n "${!v:-}" ]] || { echo "variável $v vazia em $ENV_FILE"; exit 1; }
 done
 
 # 2) Java 21+ (Debezium 3.x compila para Java 21)
@@ -78,5 +81,5 @@ cp "$HERE/application.properties" config/application.properties
 #    Debezium antes de começar. Aqui não tem Kubernetes: o cliente não lê kubeconfig nenhum.
 export KUBERNETES_AUTH_TRYKUBECONFIG=false
 export KUBECONFIG=/dev/null
-echo "Debezium Server $DBZ_VERSION -> Zerobus ($ZEROBUS_SERVER_ENDPOINT), catálogo $UC_CATALOG"
+echo "Debezium Server $DBZ_VERSION -> Zerobus ($ZEROBUS_SERVER_ENDPOINT), catálogo $UC_CATALOG, variáveis de ${ENV_FILE#"$ROOT/"}"
 exec ./run.sh

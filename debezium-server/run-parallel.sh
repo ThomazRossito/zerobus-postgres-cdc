@@ -4,7 +4,7 @@
 # tabela e por processo; a doc do Zerobus diz que abrir mais streams é o jeito de escalar).
 #
 # Uso (da raiz do projeto):   ./debezium-server/run-parallel.sh [N]        N = instâncias (padrão 4)
-# Variáveis opcionais:        BATCH=51200  JAVA_OPTS="-Xms512m -Xmx1536m"  HTTP_BASE=8090  YES=1
+# Variáveis opcionais:        BATCH=51200  JAVA_OPTS="-Xms512m -Xmx1536m"  HTTP_BASE=8090  YES=1  ENV_FILE=.env.free
 # Medido em 30/10/2026 (Mac 10 núcleos, 32 GB): 8 instâncias deixaram a CPU em 99% e a memória em alerta;
 # por isso fila de 2x o lote e heap de 1,5 GB por instância.
 #
@@ -40,16 +40,18 @@ WORK="$HERE/parallel"
 [[ "$BATCH" =~ ^[0-9]+$ ]] || { echo "BATCH deve ser um número"; exit 1; }
 
 # 1) variáveis do .env
-if [[ -f "$ROOT/.env" ]]; then
+ENV_FILE="${ENV_FILE:-$ROOT/.env}"   # outro workspace: ENV_FILE=.env.free ./debezium-server/run.sh
+[[ "$ENV_FILE" = /* ]] || ENV_FILE="$ROOT/$ENV_FILE"
+if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source "$ROOT/.env"
+  source "$ENV_FILE"
   set +a
 else
-  echo "faltou $ROOT/.env (copie de .env.example)"; exit 1
+  echo "faltou $ENV_FILE (copie de .env.example)"; exit 1
 fi
 for v in ZEROBUS_SERVER_ENDPOINT DATABRICKS_WORKSPACE_URL DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET UC_CATALOG PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DBNAME; do
-  [[ -n "${!v:-}" ]] || { echo "variável $v vazia no .env"; exit 1; }
+  [[ -n "${!v:-}" ]] || { echo "variável $v vazia em $ENV_FILE"; exit 1; }
 done
 
 # 2) Java 21+ (mesma busca do run.sh)

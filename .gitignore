@@ -1,5 +1,7 @@
-# segredos: nunca versionar
+# segredos: nunca versionar (.env, .env.free, .env.qualquercoisa; só o .env.example entra)
 .env
+.env.*
+!.env.example
 
 # gerados pelos scripts
 generator/events.csv

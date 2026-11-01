@@ -5,7 +5,7 @@ por qualquer conector que *puxe* dados) empurra cada insert/update/delete para t
 Nenhum broker no meio. O Debezium Server lê o WAL e entrega direto no Zerobus pelo sink nativo (3.7+).
 
 ```
- MacBook (rede de casa)                                  Azure Databricks
+ MacBook (rede de casa)                                  Databricks Free Edition
  ┌──────────────┐  WAL (pgoutput)   ┌────────────────────┐  gRPC/TLS  ┌──────────────────┐
  │ PostgreSQL   │ ────────────────▶ │ Debezium Server    │ ─────────▶ │ Zerobus Ingest   │
  │ retail.*     │ slot zerobus_demo │ sink=zerobus       │ porta 443  │ ▶ retail.*       │
@@ -23,9 +23,13 @@ gateway de ingestão que precisa alcançar o Postgres. Um laptop em rede domést
 **empurrar**. É o mesmo caso das fábricas da Joby Aviation e da Toyota, que a Databricks publicou como casos de Zerobus. Quando o banco está
 numa rede alcançável, o conector gerenciado é a escolha simples.
 
-## Resultados medidos (30/10/2026)
+## Resultados medidos
 
-MacBook Pro Apple Silicon (10 núcleos, 32 GB), PostgreSQL 18, Debezium Server 3.7.0.Final, Azure Databricks eastus,
+Os números de 10 GB abaixo foram medidos em 30/10/2026 num workspace de teste e serão refeitos no Databricks
+Free Edition (AWS us-east-2) em 03/11/2026; a tabela será trocada pelos novos. O CDC e o snapshot de 10 milhões já
+foram medidos no Free Edition em 01/11/2026.
+
+MacBook Pro Apple Silicon (10 núcleos, 32 GB), PostgreSQL 18, Debezium Server 3.7.0.Final, Databricks em us-east-2,
 rede doméstica. Não é benchmark: é o que você deve ver se repetir.
 
 | Medida | Resultado |
@@ -50,16 +54,18 @@ Com 8 instâncias, o limite foi o laptop (CPU em 99%, memória em alerta), não 
 | `seed_bulk.py` (100 mil pedidos em ~2 s via COPY) e `simulate_ops.py` | Testados; `pgoutput` emite os eventos da publicação |
 | Nomes e defaults das propriedades do sink (`debezium.sink.zerobus.*`) | Conferidos no código-fonte e na documentação do Debezium Server 3.7.0.Final |
 | Mapa de tipos Debezium → Delta (timestamp→TIMESTAMP, numeric→DECIMAL, timestamptz→STRING) | Documentação oficial do sink |
-| Requisitos do Zerobus (tabela existente, grants diretos na tabela, sem CDF, regiões Azure incl. brazilsouth) | Documentação Databricks de 19 a 22/10/2026 |
-| Debezium Server rodando contra o Zerobus de verdade | Testado de ponta a ponta em 30/10/2026 (PostgreSQL 18, Azure Databricks eastus) |
-| `measure/latency.py` (databricks-sdk, statement execution) | Testado contra o workspace em 30/10/2026 |
+| Requisitos do Zerobus (tabela existente, grants diretos na tabela, sem CDF, regiões: `us-east-2` incluída) | Documentação Databricks de 19 a 28/10/2026 |
+| Debezium Server rodando contra o Zerobus de verdade | Testado de ponta a ponta em 01/11/2026 no Databricks Free Edition (AWS us-east-2): snapshot de 10 milhões em 427 s com 8 instâncias (upload de 77 Mbps), CDC com 0 erros |
+| `measure/latency.py` (databricks-sdk, statement execution) | Testado no Free Edition em 01/11/2026: p50 5,3 s, p95 7,9 s em 509 eventos; segunda rodada p50 5,6 s |
+| Zerobus no **Databricks Free Edition** (tabela gerenciada em default storage, service principal com OAuth) | Funciona: `tools/zerobus_smoke.py` e o pipeline inteiro rodaram em 01/11/2026. Um relato de julho/2026 na comunidade falhava por default storage; não falha mais |
 | Silver com AUTO CDC (`databricks/03_pipeline_silver.sql`) | **Ainda não executada** neste projeto |
 
 ## Pré-requisitos no Mac
 
 PostgreSQL 14+ já instalado e rodando; Anaconda ou Miniconda; Java 21+ (`brew install openjdk@21`); Databricks CLI autenticada
-(`databricks auth login`) para o script de latência; acesso a um workspace Azure Databricks em uma das regiões com
-Zerobus (lista oficial inclui `brazilsouth`, `eastus`, `eastus2`, `centralus`, `westeurope` e outras).
+(`databricks auth login`) para o script de latência; um workspace Databricks numa região com Zerobus. O
+[Databricks Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations) serve: foi
+nele que este projeto rodou de ponta a ponta (AWS `us-east-2`).
 
 ```bash
 conda create -n bricks_zerobus python=3.12 -y
@@ -105,8 +111,9 @@ No SQL Editor, com o seu catálogo:
 2. Crie o service principal (Settings → Identity and Access), gere client ID e secret, marque **Workspace access**.
 3. `databricks/02_grants.sql`: `USE CATALOG`, `USE SCHEMA`, `SELECT` e `MODIFY` **direto nas tabelas**.
 
-Monte o `ZEROBUS_SERVER_ENDPOINT`: `<workspace-id>.zerobus.<região>.azuredatabricks.net`, em que workspace-id é o
-número depois de `adb-` na URL do workspace (ou do `?o=`) e região é a do workspace (ex.: `brazilsouth`).
+Monte o `ZEROBUS_SERVER_ENDPOINT`: `<workspace-id>.zerobus.<região>.cloud.databricks.com` na AWS (no Azure,
+`<workspace-id>.zerobus.<região>.azuredatabricks.net`). O workspace-id é o número depois de `?o=` na URL (no Azure,
+depois de `adb-`); a região vem de `SELECT current_metastore()`, que devolve `<cloud>:<região>:<uuid>`.
 
 ### 4. Debezium Server
 
@@ -159,7 +166,7 @@ a query 3 de `databricks/04_checks.sql` mostra só o trecho da captura (do commi
 
 ### 9. Carga grande: snapshot em paralelo (`run-parallel.sh`)
 
-Um stream do Zerobus, saindo do Mac para eastus, chegou a ~26 mil linhas/s com lote de 51200, usando ~1 núcleo de
+Um stream do Zerobus, saindo do Mac, chegou a ~26 mil linhas/s com lote de 51200, usando ~1 núcleo de
 CPU. Com uma instância, o limite é o stream, não o laptop. O `run-parallel.sh` sobe N instâncias do Debezium Server, cada uma lendo uma
 faixa de `order_id` (`snapshot.select.statement.overrides`) com `snapshot.mode=initial_only`, e todas gravam na mesma
 tabela Delta, cada uma com o seu stream.
@@ -237,7 +244,9 @@ databricks/01_tables.sql       bronze (contrato typed)
 databricks/02_grants.sql       service principal
 databricks/03_pipeline_silver.sql  SDP com AUTO CDC
 databricks/04_checks.sql       conferências e métricas
+databricks/05_demo_video.sql   consultas do vídeo (A a H), para o SQLTools no VS Code
 measure/latency.py             latência commit → consultável
+tools/zerobus_smoke.py         teste de fumaça: N registros direto na tabela, sem Debezium (serve para Free Edition)
 LICENSE                        Apache 2.0
 ```
 
@@ -245,9 +254,11 @@ LICENSE                        Apache 2.0
 
 Abertas em 31/10/2026:
 
-- [Zerobus Ingest, visão geral](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-overview)
-- [Use Zerobus Ingest](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-ingest)
-- [Cotas do Zerobus Ingest](https://learn.microsoft.com/en-us/azure/databricks/ingestion/zerobus-limits)
+- [Zerobus Ingest, visão geral](https://docs.databricks.com/aws/en/ingestion/zerobus-overview)
+- [Use Zerobus Ingest](https://docs.databricks.com/aws/en/ingestion/zerobus-ingest)
+- [Cotas do Zerobus Ingest](https://docs.databricks.com/aws/en/ingestion/zerobus-limits)
+- [Regiões com Zerobus Ingest, por nuvem](https://docs.databricks.com/aws/en/resources/feature-region-support)
+- [Limitações do Databricks Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)
 - [Debezium Server](https://debezium.io/documentation/reference/stable/operations/debezium-server.html)
 - [Conector PostgreSQL do Debezium](https://debezium.io/documentation/reference/connectors/postgresql)
 - [Debezium 3.7.0.Beta1](https://debezium.io/blog/2026/08/26/debezium-3-7-beta1-released/)
@@ -257,7 +268,7 @@ Consultadas em 29/10/2026:
 
 
 - Databricks, *Use the Zerobus Ingest connector*, *Zerobus quotas*, *Zerobus limits*, *Zerobus release stages*
-  (gRPC, REST e OTLP GA; Kafka e MQTT Beta; página de 22/10/2026) e *Feature region support* (Azure, 21/10/2026).
+  (gRPC, REST e OTLP GA; Kafka e MQTT Beta; página de 22/10/2026) e *Feature region support* (AWS, 28/10/2026).
 - Debezium Server 3.7, seção *Databricks Zerobus Ingest* (rotas `zerobus`, `zerobus-rest` e `kafka`; propriedades,
   contrato do envelope, mapa de tipos) e código-fonte do módulo `debezium-server-databricks-zerobus`.
 - Debezium, *Event flattening* (`ExtractNewRecordState`, `delete.tombstone.handling.mode=rewrite`, `add.fields`).
