@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+.env_old
+.env_old.*
+.env.free
+.env.free.*
 
 # gerados pelos scripts
 generator/events.csv
