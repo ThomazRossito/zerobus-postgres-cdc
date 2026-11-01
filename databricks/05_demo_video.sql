@@ -59,3 +59,13 @@ FROM retail_zerobus.retail.orders;
 SELECT percentile(__ts_ms - __source_ts_ms, 0.5) AS captura_p50_ms
 FROM retail_zerobus.retail.orders
 WHERE __op IN ('c', 'u', 'd');
+
+-- H. o ritmo dos lotes do Zerobus: um commit na Delta a cada ~5 s
+--    (tabela de sistema em Beta; precisa de USE e SELECT no schema system;
+--     rode depois do simulador, a doc não diz com que atraso ela é atualizada)
+SELECT commit_time, committed_records,
+       unix_millis(commit_time) - lag(unix_millis(commit_time)) OVER (ORDER BY commit_time) AS ms_desde_o_anterior
+FROM system.lakeflow.zerobus_ingest
+WHERE table_name = 'retail_zerobus.retail.orders'
+ORDER BY commit_time DESC
+LIMIT 20;
