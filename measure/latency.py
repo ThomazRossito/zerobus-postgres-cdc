@@ -43,6 +43,7 @@ REQUIRED = {
 
 
 def load_env(path: Path) -> None:
+    # lê o .env sem dependência extra. setdefault: variável já exportada no terminal vence a do arquivo
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -74,6 +75,7 @@ def read_events(path: Path, seen: set, since_ms: int) -> dict:
 
 
 def p95(values: list) -> float:
+    # percentil por posição na lista ordenada; com menos de 20 amostras, usa o máximo
     return sorted(values)[int(len(values) * 0.95) - 1] if len(values) >= 20 else max(values)
 
 
@@ -84,7 +86,7 @@ def main() -> int:
     ap.add_argument("--events", default=str(Path(__file__).resolve().parents[1] / "generator" / "events.csv"))
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "latency.csv"))
     ap.add_argument("--env", default=str(Path(__file__).resolve().parents[1] / ".env"),
-                    help="arquivo .env a usar (ex.: .env.free para outro workspace)")
+                    help="arquivo de variáveis a usar (padrão: o .env da raiz do projeto)")
     args = ap.parse_args()
     load_env(Path(args.env))
 
@@ -107,6 +109,7 @@ def main() -> int:
     table = f"`{catalog}`.retail.orders"
     print(f"workspace: {w.config.host} (perfil: {profile or 'padrão da CLI'})")
 
+    # só conta evento gerado daqui para frente; seen guarda o que já foi medido
     since_ms = int(time.time() * 1000)
     seen: set = set()
     latencies = []
@@ -120,9 +123,11 @@ def main() -> int:
         while time.time() < deadline:
             pending = read_events(Path(args.events), seen, since_ms)
             if pending:
-                # só os 500 mais recentes por consulta, para a query ficar leve
+                # só os 500 mais recentes por consulta, para a query ficar leve. Se acumular mais que isso,
+                # os mais antigos ficam para as próximas voltas e saem com latência maior que a real.
                 keys = sorted(pending, key=lambda k: pending[k])[-500:]
                 ids = ",".join(str(k[0]) for k in keys)
+                # só interessa saber se o (order_id, __op) já está na bronze; o GROUP BY tira as repetições
                 sql = (f"SELECT order_id, __op FROM {table} "
                        f"WHERE order_id IN ({ids}) AND __op IN ('c','u','d') GROUP BY order_id, __op")
                 res = w.statement_execution.execute_statement(
@@ -139,6 +144,9 @@ def main() -> int:
                           f"o warehouse pode estar ligando, tentando de novo")
                     time.sleep(args.poll)
                     continue
+                # o relógio para quando a consulta volta: a latência medida inclui o intervalo de polling e o
+                # tempo da própria consulta no warehouse. É um teto, não o valor exato.
+                # Mesmo relógio dos dois lados: rode este script na máquina do simulate_ops.py.
                 now_ms = int(time.time() * 1000)
                 rows = (res.result.data_array or []) if res.result else []
                 found = {(int(r[0]), r[1]) for r in rows}

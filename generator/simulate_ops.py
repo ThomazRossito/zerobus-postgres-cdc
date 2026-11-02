@@ -38,6 +38,7 @@ def _stop(*_):
 
 
 def load_env(path: Path) -> None:
+    # lê o .env sem dependência extra. setdefault: variável já exportada no terminal vence a do arquivo
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -49,6 +50,7 @@ def load_env(path: Path) -> None:
 
 
 def conninfo() -> str:
+    # usuário admin (dono das tabelas), não o dbz: o dbz do Debezium só lê (SELECT + REPLICATION)
     return (f"host={os.environ.get('PG_HOST', 'localhost')} port={os.environ.get('PG_PORT', '5432')} "
             f"dbname={os.environ.get('PG_DBNAME', 'retail_demo')} "
             f"user={os.environ.get('PG_USER_ADMIN', 'postgres')} password={os.environ.get('PG_PASSWORD_ADMIN', '')}")
@@ -74,9 +76,12 @@ def main() -> int:
     total = round(args.rate * args.minutes * 60) if args.minutes > 0 else None
     counts = {"insert": 0, "update": 0, "delete": 0, "inventory": 0}
 
+    # autocommit: cada comando é a sua própria transação, então cada operação vira um evento no WAL na hora.
+    # É isso que deixa o latency.py medir pedido a pedido.
     with psycopg.connect(conninfo(), autocommit=True) as conn, conn.cursor() as cur, \
             open(args.events, "a", newline="") as fh:
         ev = csv.writer(fh)
+        # o events.csv acumula entre execuções (modo "a"); o cabeçalho só entra quando o arquivo é novo
         if fh.tell() == 0:
             ev.writerow(["op", "order_id", "commit_ts_ms"])
         cur.execute("SELECT store_id FROM retail.stores")
@@ -89,6 +94,7 @@ def main() -> int:
                     bar_format=BAR_FORMAT if total else BAR_FORMAT_SEM_TOTAL)
         proximo = time.monotonic()
         while not STOP and (total is None or pbar.n < total):
+            # sorteio da operação: 55% insert, 30% update, 7% delete, 8% estoque
             r = random.random()
             now = utcnow()
             op = None
@@ -98,9 +104,11 @@ def main() -> int:
                             "VALUES (%s, %s, %s, %s, 'NEW', %s, %s) RETURNING order_id",
                             (random.choice(stores), sku, random.randint(1, 12), price, now, now))
                 oid = cur.fetchone()[0]
+                # commit_ts_ms: relógio desta máquina logo depois do commit; o latency.py compara com o mesmo relógio
                 ev.writerow(["insert", oid, int(time.time() * 1000)])
                 op = "insert"
             elif r < 0.85:  # avança status de um pedido aberto recente
+                # sorteia entre os 200 abertos mais novos (lê a chave primária de trás para frente, consulta leve)
                 cur.execute("SELECT order_id, status FROM retail.orders WHERE status IN ('NEW','PICKING','SHIPPED') "
                             "ORDER BY order_id DESC LIMIT 200")
                 rows = cur.fetchall()
@@ -111,6 +119,7 @@ def main() -> int:
                     ev.writerow(["update", oid, int(time.time() * 1000)])
                     op = "update"
             elif r < 0.92:  # cancelamento: delete físico para o CDC mostrar o 'd'
+                # só pedido NEW, cancelado antes de separar. Na bronze vira __op='d' com __deleted='true'
                 cur.execute("SELECT order_id FROM retail.orders WHERE status='NEW' ORDER BY order_id DESC LIMIT 100")
                 rows = cur.fetchall()
                 if rows:
@@ -119,10 +128,12 @@ def main() -> int:
                     ev.writerow(["delete", oid, int(time.time() * 1000)])
                     op = "delete"
             else:  # movimento de estoque
+                # estoque não vai para o events.csv: a latência é medida só em retail.orders
                 sku, _ = random.choice(products)
                 cur.execute("UPDATE retail.inventory SET on_hand = GREATEST(on_hand + %s, 0), updated_at=%s "
                             "WHERE store_id=%s AND sku=%s", (random.randint(-15, 40), now, random.choice(stores), sku))
                 op = "inventory"
+            # grava o CSV na hora, para o latency.py enxergar o evento sem esperar o buffer
             fh.flush()
 
             if op:

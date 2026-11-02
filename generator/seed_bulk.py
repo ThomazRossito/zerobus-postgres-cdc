@@ -36,6 +36,7 @@ PERISHABLE = {"Laticínios", "Congelados", "Hortifruti", "Padaria"}
 CITIES = [("São Paulo", "SP"), ("Campinas", "SP"), ("Rio de Janeiro", "RJ"), ("Belo Horizonte", "MG"),
           ("Curitiba", "PR"), ("Joinville", "SC"), ("Porto Alegre", "RS"), ("Salvador", "BA"),
           ("Recife", "PE"), ("Goiânia", "GO"), ("Brasília", "DF"), ("Fortaleza", "CE")]
+# pesos do status nos pedidos históricos: 70% entregue, 12% enviado, 8% separando, 5% novo, 5% cancelado
 STATUS_HIST = ["DELIVERED"] * 70 + ["SHIPPED"] * 12 + ["PICKING"] * 8 + ["NEW"] * 5 + ["CANCELLED"] * 5
 
 # mesmo formato do script de MySQL: percentual, contagem, tempo decorrido/restante e taxa
@@ -48,6 +49,7 @@ def progress(iterable, desc: str, total: int):
 
 
 def load_env(path: Path) -> None:
+    # lê o .env sem dependência extra. setdefault: variável já exportada no terminal vence a do arquivo
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -59,6 +61,7 @@ def load_env(path: Path) -> None:
 
 
 def conninfo() -> str:
+    # usuário admin (dono das tabelas), não o dbz: o dbz do Debezium só lê (SELECT + REPLICATION)
     return (f"host={os.environ.get('PG_HOST', 'localhost')} port={os.environ.get('PG_PORT', '5432')} "
             f"dbname={os.environ.get('PG_DBNAME', 'retail_demo')} "
             f"user={os.environ.get('PG_USER_ADMIN', 'postgres')} password={os.environ.get('PG_PASSWORD_ADMIN', '')}")
@@ -88,9 +91,12 @@ def main() -> int:
     t0 = utcnow()
     inicio = time.perf_counter()
 
+    # sem autocommit: a carga inteira é uma transação só, com commit no fim
     with psycopg.connect(conninfo()) as conn, conn.cursor() as cur:
         if args.sem_fk:
-            # os pedidos usam lojas e produtos lidos do próprio banco, então a checagem é redundante
+            # os pedidos usam lojas e produtos lidos do próprio banco, então a checagem é redundante.
+            # replica desliga os gatilhos da sessão, e a FK do Postgres é feita por gatilho. O WAL é
+            # gravado igual: o Debezium vê todas as linhas.
             cur.execute("SET session_replication_role = replica")
             print("⚠️  --sem-fk: chaves estrangeiras não serão conferidas nesta carga")
         if args.truncate:
@@ -138,7 +144,9 @@ def main() -> int:
                     reorder = random.randint(10, 60)
                     cp.write_row((s, sku, random.randint(0, reorder * 4), reorder, t0))
 
-        # pedidos (primeira carga e append): order_id vem da sequência, então nunca colide
+        # pedidos (primeira carga e append): order_id vem da sequência, então nunca colide.
+        # Com o Debezium em streaming, a replicação lógica só entrega a transação depois do commit:
+        # os pedidos do append chegam ao Zerobus em rajada, logo depois do commit, e não um a um durante o COPY.
         start = t0 - timedelta(days=args.days)
         span = int(timedelta(days=args.days).total_seconds())
         with cur.copy("COPY retail.orders (store_id, sku, qty, unit_price, status, created_at, updated_at) FROM STDIN") as cp:
@@ -154,6 +162,7 @@ def main() -> int:
                 print("⏳ linhas enviadas. O Postgres ainda confere loja e produto de cada pedido e faz o commit; "
                       "em cargas grandes isso leva minutos (use --sem-fk na próxima).", flush=True)
 
+        # só a partir daqui as linhas existem para o slot do Debezium
         conn.commit()
         cur.execute("SELECT (SELECT count(*) FROM retail.stores), (SELECT count(*) FROM retail.products), "
                     "(SELECT count(*) FROM retail.inventory), (SELECT count(*) FROM retail.orders)")

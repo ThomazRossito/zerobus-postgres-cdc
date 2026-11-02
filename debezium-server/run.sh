@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Baixa o Debezium Server (versão fixada), instala o application.properties e sobe o processo.
-# Uso:  ./debezium-server/run.sh           (a partir da raiz do projeto)
-#       ENV_FILE=.env.free ./debezium-server/run.sh   (outro workspace, com slot e offsets próprios no .env.free)
-set -euo pipefail
+# Uso:  ./debezium-server/run.sh                                         (a partir da raiz do projeto)
+#       DEBEZIUM_SOURCE_SNAPSHOT_MODE=no_data ./debezium-server/run.sh   (só CDC, sem snapshot)
+#       ENV_FILE=outro.env ./debezium-server/run.sh                      (outro arquivo de variáveis)
+#
+# Passos: 1) carrega e confere as variáveis   2) acha um Java 21+
+#         3) baixa a distribuição (só na primeira vez)   4) copia o application.properties e sobe
+set -euo pipefail   # para no primeiro erro; variável não definida é erro; falha no meio de um pipe conta
 
+# versão fixada (dá para trocar com DBZ_VERSION=...); o pacote vem do Maven Central, onde o Debezium publica
 DBZ_VERSION="${DBZ_VERSION:-3.7.0.Final}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -12,8 +17,10 @@ TARBALL="debezium-server-dist-${DBZ_VERSION}.tar.gz"
 URL="https://repo1.maven.org/maven2/io/debezium/debezium-server-dist/${DBZ_VERSION}/${TARBALL}"
 
 # 1) variáveis
-ENV_FILE="${ENV_FILE:-$ROOT/.env}"   # outro workspace: ENV_FILE=.env.free ./debezium-server/run.sh
-[[ "$ENV_FILE" = /* ]] || ENV_FILE="$ROOT/$ENV_FILE"
+# Outro workspace lendo o mesmo Postgres? No arquivo dele, defina também DEBEZIUM_SOURCE_SLOT_NAME e
+# DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME; senão os dois dividem o mesmo slot e o mesmo offsets.dat.
+ENV_FILE="${ENV_FILE:-$ROOT/.env}"
+[[ "$ENV_FILE" = /* ]] || ENV_FILE="$ROOT/$ENV_FILE"   # caminho relativo = relativo à raiz do projeto
 if [[ -f "$ENV_FILE" ]]; then
   set -a; # exporta tudo que o .env definir
   # shellcheck disable=SC1091
@@ -22,6 +29,7 @@ if [[ -f "$ENV_FILE" ]]; then
 else
   echo "faltou $ENV_FILE (copie de .env.example)"; exit 1
 fi
+# as variáveis que o application.properties usa; ${!v} é o valor da variável cujo nome está em v
 for v in ZEROBUS_SERVER_ENDPOINT DATABRICKS_WORKSPACE_URL DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET UC_CATALOG PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DBNAME; do
   [[ -n "${!v:-}" ]] || { echo "variável $v vazia em $ENV_FILE"; exit 1; }
 done
@@ -46,7 +54,7 @@ export JAVA_HOME="$JH"
 export PATH="$JH/bin:$PATH"
 echo "usando Java $(java_major "$JH/bin/java"): $JH"
 
-# 3) distribuição
+# 3) distribuição: baixa e descompacta só na primeira vez; dist/ fica fora do git (.gitignore)
 mkdir -p "$DIST_DIR"
 if [[ ! -x "$DIST_DIR/debezium-server/run.sh" ]]; then
   echo "baixando $URL"
@@ -70,16 +78,20 @@ if ! ls "$LIB"/debezium-connect-plugins-*.jar >/dev/null 2>&1; then
     mv "$LIB/$PJAR.part" "$LIB/$PJAR"   # só vira .jar depois do download completo
   fi
 fi
+# daqui em diante tudo roda dentro de dist/debezium-server: é ali que fica o data/offsets.dat
 cd "$DIST_DIR/debezium-server"
 # o Debezium Server lê config/application.properties (pasta config, não conf)
 mkdir -p config data
+# copiado a cada partida: mudança feita direto em config/ some na próxima vez
 cp "$HERE/application.properties" config/application.properties
 
 # 4) sobe. Os ${VAR} do application.properties são resolvidos pelo Quarkus a partir do ambiente.
+#    Uma variável DEBEZIUM_... no ambiente também substitui a chave correspondente do arquivo.
 #    A distribuição traz a extensão de config do Kubernetes do Quarkus, que monta um cliente Kubernetes
 #    na partida e lê o ~/.kube/config. Um kubeconfig quebrado (ex.: minikube apagado) derruba o
 #    Debezium antes de começar. Aqui não tem Kubernetes: o cliente não lê kubeconfig nenhum.
 export KUBERNETES_AUTH_TRYKUBECONFIG=false
 export KUBECONFIG=/dev/null
 echo "Debezium Server $DBZ_VERSION -> Zerobus ($ZEROBUS_SERVER_ENDPOINT), catálogo $UC_CATALOG, variáveis de ${ENV_FILE#"$ROOT/"}"
+# exec: o run.sh da distribuição assume o lugar deste script, então o Ctrl+C vai direto para o Debezium
 exec ./run.sh
