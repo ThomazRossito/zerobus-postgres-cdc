@@ -69,3 +69,23 @@ FROM system.lakeflow.zerobus_ingest
 WHERE table_name = 'retail_zerobus.retail.orders'
 ORDER BY commit_time DESC
 LIMIT 20;
+
+-- ===================== Opcional: o contrato de schema (bloco 7, passos 14 a 17) =====================
+-- Antes, no Postgres, com o simulador parado:
+--   ALTER TABLE retail.orders ADD COLUMN channel text;
+--   UPDATE retail.orders SET channel = 'app' WHERE order_id = <um id da consulta B>;
+-- O Zerobus rejeita o evento (campo fora do schema da tabela) e o sink falha no flush;
+-- confira no ensaio como o Debezium Server reage (parar sozinho ou ficar tentando).
+
+-- I. a bronze ganha a coluna; é a tabela quem muda o contrato
+ALTER TABLE retail_zerobus.retail.orders ADD COLUMN channel STRING;
+
+-- J. depois de subir o run.sh de novo: o evento que estava preso entra com a coluna nova
+SELECT order_id, status, channel, __op, __lsn, timestamp_millis(__source_ts_ms) AS commit_no_postgres
+FROM retail_zerobus.retail.orders
+WHERE order_id = 94205900
+ORDER BY __lsn DESC
+LIMIT 3;
+
+-- Para guardar campos novos sem parar o fluxo: coluna de resgate (tag zerobus-rescue numa coluna VARIANT nula).
+-- https://docs.databricks.com/aws/en/ingestion/zerobus-rescue-column
